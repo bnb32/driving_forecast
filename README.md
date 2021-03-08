@@ -2,7 +2,7 @@
 
 ### What is this repository for? ###
 
-This repo includes tool for web deployment of civic weather forecasting
+This repo includes tools for web deployment of civic weather forecasting
 
 ### How do I get set up? ###
 
