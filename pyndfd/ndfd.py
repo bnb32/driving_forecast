@@ -43,16 +43,16 @@ from numpy.ma.core import MaskedConstant as NAN
 from os import makedirs, path
 from pyproj import Geod, Proj
 from shutil import rmtree
+import shutil
 from sys import stderr
 from tempfile import gettempdir
-from urllib.request import urlretrieve
+from urllib.request import urlretrieve, urlopen
 import json
 import cfgrib
 import xarray as xr
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-import collections
-
+i
 #############
 #           #
 # CONSTANTS #
@@ -68,13 +68,6 @@ NDFD_LOCAL_SERVER = None
 RTMA_LOCAL_SERVER = None
 NDFD_REMOTE_SERVER = 'http://tgftp.nws.noaa.gov/SL.us008001/ST.opnl/DF.gr2/'
 RTMA_REMOTE_SERVER = NDFD_REMOTE_SERVER
-NDFD_DIR = 'DC.ndfd' + path.sep + 'AR.{0}' + path.sep + 'VP.{1}' + path.sep
-RTMA_DIR = 'DC.ndgd' + path.sep + 'GT.rtma' + path.sep + 'AR.{0}' + path.sep + 'RT.{1}' + path.sep
-NDFD_STATIC = 'static' + path.sep + 'DC.ndfd' + path.sep + 'AR.{0}' + path.sep
-RTMA_STATIC = 'static' + path.sep + 'DC.ndgd' + 'GT.rtma' + path.sep + 'AR.{0}' + path.sep
-NDFD_VAR = 'ds.{0}.bin'
-NDFD_TMP = gettempdir() + path.sep + str(getuser()) + '_pyndfd' + path.sep
-RTMA_TMP = gettempdir() + path.sep + str(getuser()) + '_pyrtma' + path.sep
 
 ########################
 #                      #
@@ -83,93 +76,34 @@ RTMA_TMP = gettempdir() + path.sep + str(getuser()) + '_pyrtma' + path.sep
 ########################
 
 '''
-
   Function:	setLocalCacheServer
   Purpose:	Set a server to use instead of weather.noaa.gov
   Params:
 	uri:	String denoting the server URI to use
-
 '''
+
 def setLocalCacheServerNDFD(uri):
     global NDFD_LOCAL_SERVER 
     NDFD_LOCAL_SERVER = uri
 
 
 '''
-
   Function: 	getLatestForecastTime
   Purpose:  	For caching purposes, compare this time to cached time to see if
 		the cached variable needs to be updated
-
 '''
+
 def getLatestForecastTime():
     latestTime = datetime.utcnow()
     if latestTime.minute <= CACHE_SERVER_BUFFER_MIN:
         latestTime = (datetime.utcnow() - timedelta(hours=1))
     return latestTime.replace(minute=0, second=0, microsecond=0)
-    #return latestTime.replace(minute=int(latestTime.minute/CACHE_SERVER_BUFFER_MIN)*CACHE_SERVER_BUFFER_MIN, second=0, microsecond=0)
+
 
 '''
-
-  Function:	getVariableNDFD
-  Purpose:	Cache the requested variable if not already cached and return
-		the paths of the cached files
-  Params:
-	var:	The NDFD variable to retrieve
-	area:	The NDFD grid area to retrieve
-
-'''
-def getVariable(var, area, source):
-    gribs = []
-    
-    if source=='NDFD':
-        TMP_DIR = NDFD_TMP
-        DAT_DIR = NDFD_DIR
-        LOCAL_SERVER = NDFD_LOCAL_SERVER
-        REMOTE_SERVER = NDFD_REMOTE_SERVER
-    elif source=='RTMA':
-        TMP_DIR = RTMA_TMP
-        DAT_DIR = RTMA_DIR
-        LOCAL_SERVER = RTMA_LOCAL_SERVER
-        REMOTE_SERVER = RTMA_REMOTE_SERVER
-        
-    dirTime = TMP_DIR + getLatestForecastTime().strftime('%Y-%m-%d-%H:%M') + path.sep
-    if not path.isdir(dirTime):
-        try: rmtree(TMP_DIR)
-        except: pass
-        makedirs(dirTime)
-    if area in DEFS['vars']:
-        for vp in DEFS['vars'][area]:
-            if var in DEFS['vars'][area][vp]:
-                if source=='NDFD':
-                    varDir = DAT_DIR.format(area, vp)
-                if source=='RTMA':
-                    varDir = DAT_DIR.format(area, datetime.utcnow().hour-1)
-                varName = varDir + NDFD_VAR.format(var)
-                localDir = dirTime + varDir
-                localVar = dirTime + varName
-                if not path.isdir(localDir):
-                    makedirs(localDir)
-                if not path.isfile(localVar):
-                    if LOCAL_SERVER != None:
-                        remoteVar = LOCAL_SERVER + varName
-                        urlretrieve(remoteVar, localVar)
-                    else:
-                        remoteVar = REMOTE_SERVER + varName
-                        urlretrieve(remoteVar, localVar)
-                if not path.isfile(localVar):
-                    raise RuntimeError('Cannot retrieve NDFD variables at this time. Try again in a moment.')
-                gribs.append(localVar)
-    else:
-        raise ValueError('Invalid Area: ' + str(area))
-
-    return gribs
-
-'''
-
   Function:	getElevationVariable
-  Purpose:	Cache the static elevation variable if not already cached and return
-		the path of the cached file
+  Purpose:	Cache the static elevation variable if not already 
+                cached and return the path of the cached file
   Params:
 	area:	The NDFD grid area to retrieve elevation for
   
@@ -178,7 +112,6 @@ def getVariable(var, area, source):
 	  using the format in const NDFD_STATIC
 	- Puerto Rico terrian info not currently available. 
 	- Terrain data for NDFD will be updated sometime in 2015
-
 '''
 
 def getElevationVariable(area):
@@ -200,15 +133,14 @@ def getElevationVariable(area):
     return localVar
 
 '''
-
   Function:	getSmallestGrid
   Purpose:	Use the provided lat, lon coordinates to find the smallest
 		NDFD area that contains those coordinates. Return the name of the area.
   Params:
 	lat:	Latitude 
 	lon:	Longitude
-
 '''
+
 def getSmallestGrid(lat, lon):
     smallest = 'neast'
     minDist = G.inv(lon, lat, DEFS['grids'][smallest]['lonC'], DEFS['grids'][smallest]['latC'])[-1]
@@ -223,22 +155,30 @@ def getSmallestGrid(lat, lon):
             smallest = area
 
     return smallest
-    
-'''
 
+'''
   Function:	getNearestXrGridPoint
-  Purpose:	Find the nearest grid point to the provided coordinates. Return the indexes to the numpy array as well as the lat/lon and grid coordinates of the grid point.
+  Purpose:	Find the nearest grid point to the provided coordinates. 
+                Return the indexes to the numpy array as well as the lat/lon 
+                and grid coordinates of the grid point.
   Params:
 	ds:		    xarray data for grib file
 	lat:		Latitude
 	lon:		Longitude
-
-
 '''
+
 def getNearestXrGridPoint(ds,lat,lon):
     lats = ds.variables['latitude']
     lons = ds.variables['longitude']
-    dist = (lats.data - lat)**2+(lons.data - lon)**2
+    lat_arr = np.array(lats.data)-np.float64(lat)
+    lon_arr = np.array(lons.data)-np.float64(lon)
+    '''
+    for i in range(lat_arr.shape[0]):
+        for j in range(lat_arr.shape[1]):
+            lat_arr[i,j]-=np.float64(lat)
+            lon_arr[i,j]-=np.float64(lon)
+    '''
+    dist = (lat_arr)**2+(lon_arr)**2
     idy, idx = np.where(dist == dist.min())
     gLat = lats.data[idy, idx]
     gLon = lons.data[idy, idx]
@@ -256,8 +196,8 @@ def getNearestXrGridPoint(ds,lat,lon):
 	maxTime:	The maximum forecast time to analyze
   Notes:
 	- maxTime is not currently being evaluated
-
 '''
+
 def validateArguments(var, area, timeStep, minTime, maxTime):
     if timeStep < 1:
         raise ValueError('timeStep must be >= 1')
@@ -281,38 +221,35 @@ def validateArguments(var, area, timeStep, minTime, maxTime):
 
 '''
   Function:	getLocationData
-  Purpose:	To get raw data at a specific location for current time and ndfd forecast period
+  Purpose:	To get raw data at a specific location for 
+                current time and ndfd forecast period
 '''
     
-def getLocationData(var, lat, lon, timeStep=1, elev=False, minTime=None, maxTime=None, area=None):
+def getLocationData(ds_path, var, lat, lon, timeStep=1, elev=False, area=None):
     
     if area == None:
         area = getSmallestGrid(lat, lon)
     validateArguments(var, area, timeStep, minTime, maxTime)
 
-    analysis = { }
-    analysis['var'] = var
-    analysis['reqLat'] = lat
-    analysis['reqLon'] = lon
+    analysis = {}
     analysis['forecastTime'] = getLatestForecastTime()
-    analysis['forecasts'] = { }
     analysis['variables'] = { }
     
-    validTimes = []
+    ds = xr.open_dataset(ds_path,engine='cfgrib')
+    times = ds.valid_time.values.astype('datetime64[s]').tolist()
+    x,y,gLat,gLon = getNearestXrGridPoint(ds,lat,lon)
     
-    for hour in range(0, 250, timeStep):
-        t = analysis['forecastTime'] - timedelta(hours=analysis['forecastTime'].hour) + timedelta(hours=hour)
-        
-        if minTime != None and t < minTime:
-            continue
-        if maxTime != None and t > maxTime:
-            break
-        validTimes.append(t)
+    tmp=ds.isel(y=y,x=x)
+
+    for variable in tmp.data_vars:
+        varData = {}
+        for i in range(tmp.dims['step']):
+            time = times[i]
+            value = tmp.variables[variable][i,0,0].values
+            varData[time.strftime("%Y-%m-%d:%H")] = float(value)
     
-    varRTMA = getVariable(var, area, 'RTMA')
-    varNDFD = getVariable(var, area, 'NDFD')
-    allVals = []
-    
+        analysis['variables'][variable] = varData
+    '''
     for g in varRTMA:
         
         ds=xr.open_dataset(g,engine='cfgrib')
@@ -325,36 +262,20 @@ def getLocationData(var, lat, lon, timeStep=1, elev=False, minTime=None, maxTime
             time = tmp.valid_time.values.astype('datetime64[s]').tolist()
             value = tmp.variables[variable][0,0].values
             #value=tmp[0,0].values
-            analysis['variables'][variable] = {time: float(value)}
+            analysis['variables'][variable] = {time.strftime("%Y-%m-%d:%H"): float(value),**analysis['variables'][variable]}
     
-
-    for g in varNDFD:
-
-        ds = xr.open_dataset(g,engine='cfgrib')
-        times = ds.valid_time.values.astype('datetime64[s]').tolist()
-        x,y,gLat,gLon = getNearestXrGridPoint(ds,lat,lon)
-        
-        tmp=ds.isel(y=y,x=x)
-
-        for variables in tmp.data_vars:
-            varData = {}
-            for i in range(tmp.dims['step']):
-                time = times[i]
-                value = tmp.variables[variable][i,0,0].values
-                varData[time] = float(value)
-        
-        analysis['variables'][variable] = {**analysis['variables'][variable],**varData}
+    '''
 
     return analysis
 
 '''
   Function:	plotData
-  Purpose: Plot data from getLocationData
+  Purpose:      Plot data from getLocationData
 '''
 
 def plotData(data,var):
 
-    xtmp = [mdates.date2num(x) for x in data[var].keys()]
+    xtmp = [mdates.date2num(datetime.strptime(x,'%Y-%m-%d:%H')) for x in data[var].keys()]
     x = sorted(xtmp)
     ytmp = [y for y in data[var].values()]
     y = []
